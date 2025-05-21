@@ -1,12 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { supabase, type DbNote } from "@/lib/supabase";
+import { getMockSummary } from "@/lib/mockAiSummary";
 
 interface Note {
-  id: number;
+  id: string;
   content: string;
   timestamp: string;
   isEditing?: boolean;
@@ -15,55 +23,131 @@ interface Note {
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [currentNote, setCurrentNote] = useState("");
+  const [summaryDialogOpen, setSummaryDialogOpen] = useState(false);
+  const [currentSummary, setCurrentSummary] = useState("");
+  const [isLoadingSummary, setIsLoadingSummary] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Fetch notes on component mount
+  useEffect(() => {
+    fetchNotes();
+  }, []);
+
+  // Function to fetch notes from Supabase
+  const fetchNotes = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('notes')
+        .select('*')
+        .order('timestamp', { ascending: false });
+
+      if (error) throw error;
+
+      setNotes(data.map(note => ({
+        ...note,
+        isEditing: false
+      })));
+    } catch (error) {
+      console.error('Error fetching notes:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // Function to add a new note
-  const addNote = () => {
+  const addNote = async () => {
     if (currentNote.trim() === "") return;
 
-    const newNote: Note = {
-      id: Date.now(),
-      content: currentNote,
-      timestamp: new Date().toLocaleString(),
-      isEditing: false,
-    };
+    try {
+      const { data, error } = await supabase
+        .from('notes')
+        .insert([
+          { content: currentNote }
+        ])
+        .select()
+        .single();
 
-    setNotes([...notes, newNote]);
-    setCurrentNote(""); // Clear the textarea
+      if (error) throw error;
+
+      setNotes(prevNotes => [{
+        ...data,
+        isEditing: false
+      }, ...prevNotes]);
+      
+      setCurrentNote(""); // Clear the textarea
+    } catch (error) {
+      console.error('Error adding note:', error);
+    }
   };
 
   // Function to delete a note
-  const deleteNote = (id: number) => {
-    setNotes(notes.filter(note => note.id !== id));
+  const deleteNote = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('notes')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+
+      setNotes(notes.filter(note => note.id !== id));
+    } catch (error) {
+      console.error('Error deleting note:', error);
+    }
   };
 
   // Function to start editing a note
-  const startEditing = (id: number) => {
+  const startEditing = (id: string) => {
     setNotes(notes.map(note => 
       note.id === id ? { ...note, isEditing: true } : note
     ));
   };
 
   // Function to save edited note
-  const saveEdit = (id: number, newContent: string) => {
+  const saveEdit = async (id: string, newContent: string) => {
     if (newContent.trim() === "") return;
     
-    setNotes(notes.map(note => 
-      note.id === id 
-        ? { 
-            ...note, 
-            content: newContent, 
-            isEditing: false,
-            timestamp: new Date().toLocaleString() + ' (edited)'
-          } 
-        : note
-    ));
+    try {
+      const { data, error } = await supabase
+        .from('notes')
+        .update({ 
+          content: newContent,
+          timestamp: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setNotes(notes.map(note => 
+        note.id === id 
+          ? { ...data, isEditing: false }
+          : note
+      ));
+    } catch (error) {
+      console.error('Error updating note:', error);
+    }
   };
 
   // Function to cancel editing
-  const cancelEdit = (id: number) => {
+  const cancelEdit = (id: string) => {
     setNotes(notes.map(note => 
       note.id === id ? { ...note, isEditing: false } : note
     ));
+  };
+
+  const handleGetSummary = async (content: string) => {
+    setIsLoadingSummary(true);
+    setSummaryDialogOpen(true);
+    try {
+      const summary = await getMockSummary(content);
+      setCurrentSummary(summary);
+    } catch (error) {
+      setCurrentSummary("Failed to generate summary. Please try again.");
+    } finally {
+      setIsLoadingSummary(false);
+    }
   };
 
   return (
@@ -86,66 +170,99 @@ export default function Home() {
 
       {/* Notes Display Section */}
       <div className="max-w-4xl mx-auto grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {notes.map((note) => (
-          <Card key={note.id}>
-            <CardHeader>
-              <CardTitle className="text-sm text-gray-500">
-                {note.timestamp}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {note.isEditing ? (
-                <Textarea
-                  defaultValue={note.content}
-                  className="min-h-[100px] mb-2"
-                  id={`edit-${note.id}`}
-                />
-              ) : (
-                <p className="whitespace-pre-wrap">{note.content}</p>
-              )}
-            </CardContent>
-            <CardFooter className="flex gap-2 justify-end">
-              {note.isEditing ? (
-                <>
-                  <Button 
-                    variant="outline" 
-                    size="sm"
-                    onClick={() => cancelEdit(note.id)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button 
-                    size="sm"
-                    onClick={() => {
-                      const textarea = document.getElementById(`edit-${note.id}`) as HTMLTextAreaElement;
-                      saveEdit(note.id, textarea.value);
-                    }}
-                  >
-                    Save
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button 
-                    variant="outline" 
-                    size="sm"
-                    onClick={() => startEditing(note.id)}
-                  >
-                    Edit
-                  </Button>
-                  <Button 
-                    variant="destructive" 
-                    size="sm"
-                    onClick={() => deleteNote(note.id)}
-                  >
-                    Delete
-                  </Button>
-                </>
-              )}
-            </CardFooter>
-          </Card>
-        )).reverse()}
+        {isLoading ? (
+          <p className="text-center col-span-full">Loading notes...</p>
+        ) : notes.length === 0 ? (
+          <p className="text-center col-span-full text-muted-foreground">
+            No notes yet. Create your first note above!
+          </p>
+        ) : (
+          notes.map((note) => (
+            <Card key={note.id}>
+              <CardHeader>
+                <CardTitle className="text-sm text-gray-500">
+                  {note.timestamp}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {note.isEditing ? (
+                  <Textarea
+                    defaultValue={note.content}
+                    className="min-h-[100px] mb-2"
+                    id={`edit-${note.id}`}
+                  />
+                ) : (
+                  <p className="whitespace-pre-wrap">{note.content}</p>
+                )}
+              </CardContent>
+              <CardFooter className="flex gap-2 justify-end">
+                {note.isEditing ? (
+                  <>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => cancelEdit(note.id)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button 
+                      size="sm"
+                      onClick={() => {
+                        const textarea = document.getElementById(`edit-${note.id}`) as HTMLTextAreaElement;
+                        saveEdit(note.id, textarea.value);
+                      }}
+                    >
+                      Save
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => handleGetSummary(note.content)}
+                    >
+                      AI Summary
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => startEditing(note.id)}
+                    >
+                      Edit
+                    </Button>
+                    <Button 
+                      variant="destructive" 
+                      size="sm"
+                      onClick={() => deleteNote(note.id)}
+                    >
+                      Delete
+                    </Button>
+                  </>
+                )}
+              </CardFooter>
+            </Card>
+          ))
+        )}
       </div>
+
+      {/* Summary Dialog */}
+      <Dialog open={summaryDialogOpen} onOpenChange={setSummaryDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>AI Summary</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            {isLoadingSummary ? (
+              <p className="text-center text-muted-foreground">
+                Generating summary...
+              </p>
+            ) : (
+              <p className="text-sm">{currentSummary}</p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
